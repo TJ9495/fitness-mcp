@@ -6,6 +6,7 @@ import uvicorn
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount
 
 load_dotenv()
@@ -13,7 +14,7 @@ load_dotenv()
 WHOOP_ACCESS_TOKEN = os.getenv("WHOOP_ACCESS_TOKEN")
 WHOOP_USER_ID = os.getenv("WHOOP_USER_ID")
 
-mcp = FastMCP("fitness-mcp")
+mcp = FastMCP("fitness-mcp", stateless_http=True)
 
 
 @mcp.tool()
@@ -27,12 +28,9 @@ def get_whoop_recovery() -> str:
         "Whoop-User-ID": WHOOP_USER_ID,
     }
 
-    url = "https://api.whoop.com/graphql/v1"
-
     query = """
     query GetRecovery($userId: String!) {
         user(id: $userId) {
-            id
             cycles(sort: {key: START_DATE_TIME, order: DESC}, first: 1) {
                 edges {
                     node {
@@ -40,13 +38,7 @@ def get_whoop_recovery() -> str:
                         strain
                         sleep_needed
                         sleep_performed
-                        sleep_deficit
                         sleep_efficiency
-                        restlessness
-                        sleep_latency
-                        sleep_performance
-                        start_date_time
-                        end_date_time
                     }
                 }
             }
@@ -54,11 +46,9 @@ def get_whoop_recovery() -> str:
     }
     """
 
-    variables = {"userId": WHOOP_USER_ID}
-
     response = requests.post(
-        url,
-        json={"query": query, "variables": variables},
+        "https://api.whoop.com/graphql/v1",
+        json={"query": query, "variables": {"userId": WHOOP_USER_ID}},
         headers=headers,
         timeout=30,
     )
@@ -75,15 +65,15 @@ def get_whoop_recovery() -> str:
         cycle = data["data"]["user"]["cycles"]["edges"][0]["node"]
         recovery = cycle["recovery"]
         strain = cycle["strain"]
-
         recovery_emoji = "🟢" if recovery > 67 else "🟡" if recovery > 33 else "🔴"
 
-        return f"""
-{recovery_emoji} Recovery: {recovery}%
-💪 Strain: {strain:.0f}
-😴 Sleep Performed: {cycle['sleep_performed']:.1f}h (Needed: {cycle['sleep_needed']:.1f}h)
-📊 Efficiency: {cycle['sleep_efficiency']:.0f}%
-        """.strip()
+        return (
+            f"{recovery_emoji} Recovery: {recovery}%\n"
+            f"💪 Strain: {strain:.0f}\n"
+            f"😴 Sleep Performed: {cycle['sleep_performed']:.1f}h "
+            f"(Needed: {cycle['sleep_needed']:.1f}h)\n"
+            f"📊 Efficiency: {cycle['sleep_efficiency']:.0f}%"
+        )
     except (KeyError, IndexError, TypeError):
         return "❌ No recent recovery data found"
 
@@ -99,23 +89,16 @@ def get_workouts() -> str:
         "Whoop-User-ID": WHOOP_USER_ID,
     }
 
-    url = "https://api.whoop.com/graphql/v1"
-
     query = """
     query GetWorkouts($userId: String!) {
         user(id: $userId) {
-            id
             activities(sort: {key: START_DATE_TIME, order: DESC}, first: 5) {
                 edges {
                     node {
-                        id
                         name
                         strain
-                        duration
-                        calories
                         start_date_time
                         end_date_time
-                        type
                     }
                 }
             }
@@ -123,11 +106,9 @@ def get_workouts() -> str:
     }
     """
 
-    variables = {"userId": WHOOP_USER_ID}
-
     response = requests.post(
-        url,
-        json={"query": query, "variables": variables},
+        "https://api.whoop.com/graphql/v1",
+        json={"query": query, "variables": {"userId": WHOOP_USER_ID}},
         headers=headers,
         timeout=30,
     )
@@ -151,16 +132,10 @@ def get_workouts() -> str:
     workouts = []
     for edge in activities:
         activity = edge["node"]
-        start_time = datetime.fromisoformat(
-            activity["start_date_time"].replace("Z", "+00:00")
-        )
-        end_time = datetime.fromisoformat(
-            activity["end_date_time"].replace("Z", "+00:00")
-        )
+        start_time = datetime.fromisoformat(activity["start_date_time"].replace("Z", "+00:00"))
+        end_time = datetime.fromisoformat(activity["end_date_time"].replace("Z", "+00:00"))
         duration = (end_time - start_time).total_seconds() / 3600
-        workouts.append(
-            f"• {activity['name']} ({duration:.1f}h): {activity['strain']:.0f} strain"
-        )
+        workouts.append(f"• {activity['name']} ({duration:.1f}h): {activity['strain']:.0f} strain")
 
     return "Recent Workouts:\n" + "\n".join(workouts)
 
@@ -181,6 +156,14 @@ app = Starlette(
     routes=[
         Mount("/", app=mcp.streamable_http_app()),
     ]
+)
+
+app = CORSMiddleware(
+    app,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],
 )
 
 if __name__ == "__main__":
