@@ -13,7 +13,7 @@ load_dotenv()
 
 WHOOP_CLIENT_ID = os.getenv("WHOOP_CLIENT_ID")
 WHOOP_CLIENT_SECRET = os.getenv("WHOOP_CLIENT_SECRET")
-HEVY_API_KEY = os.getenv("HEVY_API_KEY")  # Your existing Hevy key
+HEVY_API_KEY = os.getenv("HEVY_API_KEY")
 PORT = int(os.environ.get("PORT", "8080"))
 
 mcp = FastMCP(
@@ -27,10 +27,15 @@ mcp = FastMCP(
 async def get_whoop_recovery() -> str:
     """Get your current WHOOP recovery score."""
     try:
-        from whoop import WhoopClient
-        client = WhoopClient(WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)
-        cycles = await client.get_cycles(limit=1)
+        from whoopy import WhoopClient
         
+        client = WhoopClient.auth_flow(
+            client_id=WHOOP_CLIENT_ID,
+            client_secret=WHOOP_CLIENT_SECRET,
+            redirect_uri="http://localhost:8787/callback"
+        )
+        
+        cycles = client.cycle.collection(limit=1)
         if not cycles:
             return "No recent WHOOP data"
         
@@ -39,9 +44,13 @@ async def get_whoop_recovery() -> str:
         strain = cycle.strain
         emoji = "🟢" if recovery > 67 else "🟡" if recovery > 33 else "🔴"
         
-        return f"{emoji} **Recovery: {recovery}%** | 💪 **Strain: {strain:.0f}**"
+        return (
+            f"{emoji} **Recovery: {recovery}%**\n"
+            f"💪 **Strain: {strain:.0f}**\n"
+            f"😴 **Sleep Performance: {cycle.sleep.performance:.1f}%**"
+        )
     except ImportError:
-        return "❌ Install `whoop-python`: pip install whoop-python"
+        return "❌ Install whoopy: pip install whoopy"
     except Exception as e:
         return f"OAuth needed: {str(e)}"
 
@@ -53,16 +62,18 @@ async def get_workouts() -> str:
     
     # WHOOP workouts
     try:
-        from whoop import WhoopClient
-        client = WhoopClient(WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)
-        activities = await client.get_activities(limit=3)
+        from whoopy import WhoopClient
+        client = WhoopClient.auth_flow(
+            WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET, "http://localhost:8787/callback"
+        )
+        activities = client.activity.collection(limit=3)
         for activity in activities:
             duration = (activity.end_time - activity.start_time).total_seconds() / 3600
-            workouts.append(f"**WHOOP**: {activity.name} ({duration:.1f}h): {activity.strain:.0f}")
+            workouts.append(f"**WHOOP** {activity.name} ({duration:.1f}h): {activity.strain:.0f}")
     except:
         pass
     
-    # Hevy workouts (your existing integration)
+    # Hevy workouts (preserved)
     if HEVY_API_KEY:
         try:
             response = requests.get(
@@ -70,30 +81,26 @@ async def get_workouts() -> str:
                 headers={"Authorization": f"Bearer {HEVY_API_KEY}"},
                 params={"limit": 3}
             )
-            hevy_workouts = response.json().get("data", [])
-            for workout in hevy_workouts:
-                workouts.append(f"**Hevy**: {workout['name']} - {workout['date']}")
+            if response.status_code == 200:
+                hevy_workouts = response.json().get("data", [])
+                for workout in hevy_workouts:
+                    workouts.append(f"**Hevy** {workout.get('name', 'Workout')} - {workout.get('date', 'Recent')}")
         except:
             pass
     
-    if not workouts:
-        return "No workout data found"
-    
-    return "**Recent Workouts:**\n" + "\n".join(workouts[:5])
+    return "**Recent Workouts:**\n" + "\n".join(workouts[:6]) or "No workouts found"
 
 
 @mcp.resource("recovery://current")
-def recovery_resource() -> str:
+async def recovery_resource() -> str:
     """Current WHOOP recovery data."""
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(get_whoop_recovery())
+    return await get_whoop_recovery()
 
 
 @mcp.resource("workouts://recent")
-def workouts_resource() -> str:
+async def workouts_resource() -> str:
     """Recent workouts from WHOOP + Hevy."""
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(get_workouts())
+    return await get_workouts()
 
 
 app = Starlette(
