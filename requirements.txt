@@ -3,4 +3,4 @@ python-dotenv
 requests
 uvicorn
 starlette
-whoop-python
+whoopy
