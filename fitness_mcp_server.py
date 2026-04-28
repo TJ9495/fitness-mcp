@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 
@@ -11,7 +12,10 @@ def safe_json(response):
     try:
         return response.json()
     except Exception:
-        return {"error": "Invalid JSON response", "status_code": getattr(response, "status_code", None)}
+        return {
+            "error": "Invalid JSON response",
+            "status_code": getattr(response, "status_code", None),
+        }
 
 
 @mcp.tool()
@@ -20,7 +24,7 @@ def get_profile():
     resp = whoop_client.get_profile()
     return {
         "status_code": resp.status_code,
-        "data": safe_json(resp)
+        "data": safe_json(resp),
     }
 
 
@@ -30,7 +34,7 @@ def get_body_measurements():
     resp = whoop_client.get_body_measurements()
     return {
         "status_code": resp.status_code,
-        "data": safe_json(resp)
+        "data": safe_json(resp),
     }
 
 
@@ -53,7 +57,7 @@ def get_recent_cycles(limit: int = 7):
     return {
         "status_code": resp.status_code,
         "count": len(cycles),
-        "cycles": cycles
+        "cycles": cycles,
     }
 
 
@@ -82,12 +86,16 @@ def get_recent_hevy_workouts(limit: int = 5):
             "title": workout.get("title"),
             "date": start_time[:10] if start_time else None,
             "duration_min": duration_min,
-            "exercises": [ex.get("title") for ex in workout.get("exercises", [])[:5] if ex.get("title")]
+            "exercises": [
+                ex.get("title")
+                for ex in workout.get("exercises", [])[:5]
+                if ex.get("title")
+            ],
         })
 
     return {
         "count": len(formatted),
-        "workouts": formatted
+        "workouts": formatted,
     }
 
 
@@ -158,10 +166,11 @@ def get_rehab_progress_notes():
         "recent_sessions_checked": len(workouts),
         "machine_sessions": machine_sessions,
         "barbell_sessions": barbell_sessions,
-        "interpretation": "Recent training appears machine-heavy, which may fit a post-surgery or lower-joint-stress phase."
+        "interpretation": "Recent training appears machine-heavy, which may fit a post-surgery or lower-joint-stress phase.",
     }
 
 
 if __name__ == "__main__":
-    print("FITNESS MCP SERVER STARTING...")
-    mcp.run()
+    port = int(os.environ.get("PORT", "8000"))
+    print(f"FITNESS MCP SERVER STARTING ON PORT {port}...")
+    mcp.run(transport="http", host="0.0.0.0", port=port)
