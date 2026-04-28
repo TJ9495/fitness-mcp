@@ -3,4 +3,3 @@ python-dotenv
 requests
 uvicorn
 starlette
-pydantic
