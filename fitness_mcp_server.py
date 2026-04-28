@@ -1,7 +1,5 @@
 import os
-from datetime import datetime
-import asyncio
-import aiohttp
+from urllib.parse import urlencode
 
 import requests
 import uvicorn
@@ -30,15 +28,17 @@ async def get_whoop_recovery() -> str:
     if not WHOOP_CLIENT_ID or not WHOOP_CLIENT_SECRET:
         return "❌ WHOOP_CLIENT_ID or WHOOP_CLIENT_SECRET missing in Railway Variables"
 
-    auth_url = (
-        f"https://api.whoop.com/oauth/authorize?"
-        f"client_id={WHOOP_CLIENT_ID}&"
-        "response_type=code&"
-        "redirect_uri=http://localhost:8787/callback&"
-        "scope=offline read:profile read:recovery read:cycles"
+    params = urlencode(
+        {
+            "client_id": WHOOP_CLIENT_ID,
+            "response_type": "code",
+            "redirect_uri": "http://localhost:8787/callback",
+            "scope": "offline read:profile read:recovery read:cycles",
+        }
     )
 
-    return f"🔐 **WHOOP OAuth needed**: Visit {auth_url} then retry this tool"
+    auth_url = f"https://api.prod.whoop.com/oauth/oauth2/auth?{params}"
+    return f"🔐 WHOOP OAuth needed: Visit {auth_url} then retry this tool"
 
 
 @mcp.tool()
@@ -59,7 +59,10 @@ async def get_hevy_workouts() -> str:
     try:
         response = requests.get(
             "https://api.hevyapp.com/v1/workouts",
-            headers={"Authorization": f"Bearer {HEVY_API_KEY}"},
+            headers={
+                "api-key": HEVY_API_KEY,
+                "Accept": "application/json",
+            },
             params={"limit": 5},
             timeout=30,
         )
@@ -69,10 +72,11 @@ async def get_hevy_workouts() -> str:
 
         data = response.json()
         workouts = []
+
         for workout in data.get("data", []):
-            workouts.append(
-                f"• {workout.get('name', 'Workout')} - {workout.get('date', 'Recent')}"
-            )
+            name = workout.get("name", "Workout")
+            date = workout.get("date", "Recent")
+            workouts.append(f"• {name} - {date}")
 
         if not workouts:
             return "No Hevy workouts found"
