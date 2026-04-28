@@ -170,7 +170,12 @@ def get_rehab_progress_notes():
     }
 
 
+app = mcp.http_app(path="/mcp")
+
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8000"))
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8080"))
     print(f"FITNESS MCP SERVER STARTING ON PORT {port}...")
-    mcp.run(transport="http", host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
