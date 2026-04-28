@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+import asyncio
 
 import requests
 import uvicorn
@@ -10,8 +11,9 @@ from starlette.routing import Mount
 
 load_dotenv()
 
-WHOOP_ACCESS_TOKEN = os.getenv("WHOOP_ACCESS_TOKEN")
-WHOOP_USER_ID = os.getenv("WHOOP_USER_ID")
+WHOOP_CLIENT_ID = os.getenv("WHOOP_CLIENT_ID")
+WHOOP_CLIENT_SECRET = os.getenv("WHOOP_CLIENT_SECRET")
+HEVY_API_KEY = os.getenv("HEVY_API_KEY")  # Your existing Hevy key
 PORT = int(os.environ.get("PORT", "8080"))
 
 mcp = FastMCP(
@@ -22,138 +24,76 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def get_whoop_recovery() -> str:
-    """Get your current WHOOP recovery score, strain, and sleep data."""
-    if not WHOOP_ACCESS_TOKEN or not WHOOP_USER_ID:
-        return "❌ WHOOP_ACCESS_TOKEN or WHOOP_USER_ID missing"
-
-    headers = {
-        "Authorization": f"Bearer {WHOOP_ACCESS_TOKEN}",
-        "Whoop-User-ID": WHOOP_USER_ID,
-    }
-
-    query = """
-    query GetRecovery($userId: String!) {
-        user(id: $userId) {
-            cycles(sort: {key: START_DATE_TIME, order: DESC}, first: 1) {
-                edges {
-                    node {
-                        recovery
-                        strain
-                        sleep_needed
-                        sleep_performed
-                        sleep_efficiency
-                    }
-                }
-            }
-        }
-    }
-    """
-
-    response = requests.post(
-        "https://api.whoop.com/graphql/v1",
-        json={"query": query, "variables": {"userId": WHOOP_USER_ID}},
-        headers=headers,
-        timeout=30,
-    )
-
-    if response.status_code != 200:
-        return f"❌ API Error: {response.status_code}"
-
-    data = response.json()
-
-    if "errors" in data:
-        return f"❌ GraphQL Error: {data['errors']}"
-
+async def get_whoop_recovery() -> str:
+    """Get your current WHOOP recovery score."""
     try:
-        cycle = data["data"]["user"]["cycles"]["edges"][0]["node"]
-        recovery = cycle["recovery"]
-        strain = cycle["strain"]
-        recovery_emoji = "🟢" if recovery > 67 else "🟡" if recovery > 33 else "🔴"
-
-        return (
-            f"{recovery_emoji} Recovery: {recovery}%\n"
-            f"💪 Strain: {strain:.0f}\n"
-            f"😴 Sleep Performed: {cycle['sleep_performed']:.1f}h "
-            f"(Needed: {cycle['sleep_needed']:.1f}h)\n"
-            f"📊 Efficiency: {cycle['sleep_efficiency']:.0f}%"
-        )
-    except (KeyError, IndexError, TypeError):
-        return "❌ No recent recovery data found"
+        from whoop import WhoopClient
+        client = WhoopClient(WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)
+        cycles = await client.get_cycles(limit=1)
+        
+        if not cycles:
+            return "No recent WHOOP data"
+        
+        cycle = cycles[0]
+        recovery = cycle.recovery
+        strain = cycle.strain
+        emoji = "🟢" if recovery > 67 else "🟡" if recovery > 33 else "🔴"
+        
+        return f"{emoji} **Recovery: {recovery}%** | 💪 **Strain: {strain:.0f}**"
+    except ImportError:
+        return "❌ Install `whoop-python`: pip install whoop-python"
+    except Exception as e:
+        return f"OAuth needed: {str(e)}"
 
 
 @mcp.tool()
-def get_workouts() -> str:
-    """Get your recent workouts from WHOOP."""
-    if not WHOOP_ACCESS_TOKEN or not WHOOP_USER_ID:
-        return "❌ WHOOP credentials missing"
-
-    headers = {
-        "Authorization": f"Bearer {WHOOP_ACCESS_TOKEN}",
-        "Whoop-User-ID": WHOOP_USER_ID,
-    }
-
-    query = """
-    query GetWorkouts($userId: String!) {
-        user(id: $userId) {
-            activities(sort: {key: START_DATE_TIME, order: DESC}, first: 5) {
-                edges {
-                    node {
-                        name
-                        strain
-                        start_date_time
-                        end_date_time
-                    }
-                }
-            }
-        }
-    }
-    """
-
-    response = requests.post(
-        "https://api.whoop.com/graphql/v1",
-        json={"query": query, "variables": {"userId": WHOOP_USER_ID}},
-        headers=headers,
-        timeout=30,
-    )
-
-    if response.status_code != 200:
-        return f"❌ API Error: {response.status_code}"
-
-    data = response.json()
-
-    if "errors" in data:
-        return f"❌ GraphQL Error: {data['errors']}"
-
-    try:
-        activities = data["data"]["user"]["activities"]["edges"]
-    except (KeyError, TypeError):
-        return "❌ Could not read workout data"
-
-    if not activities:
-        return "No recent workouts found"
-
+async def get_workouts() -> str:
+    """Get recent workouts from WHOOP and Hevy."""
     workouts = []
-    for edge in activities:
-        activity = edge["node"]
-        start_time = datetime.fromisoformat(activity["start_date_time"].replace("Z", "+00:00"))
-        end_time = datetime.fromisoformat(activity["end_date_time"].replace("Z", "+00:00"))
-        duration = (end_time - start_time).total_seconds() / 3600
-        workouts.append(f"• {activity['name']} ({duration:.1f}h): {activity['strain']:.0f} strain")
-
-    return "Recent Workouts:\n" + "\n".join(workouts)
+    
+    # WHOOP workouts
+    try:
+        from whoop import WhoopClient
+        client = WhoopClient(WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)
+        activities = await client.get_activities(limit=3)
+        for activity in activities:
+            duration = (activity.end_time - activity.start_time).total_seconds() / 3600
+            workouts.append(f"**WHOOP**: {activity.name} ({duration:.1f}h): {activity.strain:.0f}")
+    except:
+        pass
+    
+    # Hevy workouts (your existing integration)
+    if HEVY_API_KEY:
+        try:
+            response = requests.get(
+                "https://api.hevyapp.com/v1/workouts",
+                headers={"Authorization": f"Bearer {HEVY_API_KEY}"},
+                params={"limit": 3}
+            )
+            hevy_workouts = response.json().get("data", [])
+            for workout in hevy_workouts:
+                workouts.append(f"**Hevy**: {workout['name']} - {workout['date']}")
+        except:
+            pass
+    
+    if not workouts:
+        return "No workout data found"
+    
+    return "**Recent Workouts:**\n" + "\n".join(workouts[:5])
 
 
 @mcp.resource("recovery://current")
 def recovery_resource() -> str:
     """Current WHOOP recovery data."""
-    return get_whoop_recovery()
+    loop = asyncio.get_event_loop()
+    return loop.run_until_complete(get_whoop_recovery())
 
 
 @mcp.resource("workouts://recent")
 def workouts_resource() -> str:
-    """Recent workouts from WHOOP."""
-    return get_workouts()
+    """Recent workouts from WHOOP + Hevy."""
+    loop = asyncio.get_event_loop()
+    return loop.run_until_complete(get_workouts())
 
 
 app = Starlette(
