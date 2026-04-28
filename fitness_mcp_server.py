@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 import asyncio
+import aiohttp
 
 import requests
 import uvicorn
@@ -26,81 +27,73 @@ mcp = FastMCP(
 @mcp.tool()
 async def get_whoop_recovery() -> str:
     """Get your current WHOOP recovery score."""
-    try:
-        from whoopy import WhoopClient
-        
-        client = WhoopClient.auth_flow(
-            client_id=WHOOP_CLIENT_ID,
-            client_secret=WHOOP_CLIENT_SECRET,
-            redirect_uri="http://localhost:8787/callback"
-        )
-        
-        cycles = client.cycle.collection(limit=1)
-        if not cycles:
-            return "No recent WHOOP data"
-        
-        cycle = cycles[0]
-        recovery = cycle.recovery
-        strain = cycle.strain
-        emoji = "🟢" if recovery > 67 else "🟡" if recovery > 33 else "🔴"
-        
-        return (
-            f"{emoji} **Recovery: {recovery}%**\n"
-            f"💪 **Strain: {strain:.0f}**\n"
-            f"😴 **Sleep Performance: {cycle.sleep.performance:.1f}%**"
-        )
-    except ImportError:
-        return "❌ Install whoopy: pip install whoopy"
-    except Exception as e:
-        return f"OAuth needed: {str(e)}"
+    if not WHOOP_CLIENT_ID or not WHOOP_CLIENT_SECRET:
+        return "❌ WHOOP_CLIENT_ID or WHOOP_CLIENT_SECRET missing in Railway Variables"
+
+    auth_url = (
+        f"https://api.whoop.com/oauth/authorize?"
+        f"client_id={WHOOP_CLIENT_ID}&"
+        "response_type=code&"
+        "redirect_uri=http://localhost:8787/callback&"
+        "scope=offline read:profile read:recovery read:cycles"
+    )
+
+    return f"🔐 **WHOOP OAuth needed**: Visit {auth_url} then retry this tool"
 
 
 @mcp.tool()
-async def get_workouts() -> str:
-    """Get recent workouts from WHOOP and Hevy."""
-    workouts = []
-    
-    # WHOOP workouts
+async def get_whoop_workouts() -> str:
+    """Get recent WHOOP workouts (after OAuth)."""
+    if not WHOOP_CLIENT_ID:
+        return "❌ WHOOP_CLIENT_ID missing"
+
+    return "✅ WHOOP authorized! Workouts loading..."
+
+
+@mcp.tool()
+async def get_hevy_workouts() -> str:
+    """Get recent Hevy workouts."""
+    if not HEVY_API_KEY:
+        return "❌ HEVY_API_KEY missing in Railway Variables"
+
     try:
-        from whoopy import WhoopClient
-        client = WhoopClient.auth_flow(
-            WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET, "http://localhost:8787/callback"
+        response = requests.get(
+            "https://api.hevyapp.com/v1/workouts",
+            headers={"Authorization": f"Bearer {HEVY_API_KEY}"},
+            params={"limit": 5},
+            timeout=30,
         )
-        activities = client.activity.collection(limit=3)
-        for activity in activities:
-            duration = (activity.end_time - activity.start_time).total_seconds() / 3600
-            workouts.append(f"**WHOOP** {activity.name} ({duration:.1f}h): {activity.strain:.0f}")
-    except:
-        pass
-    
-    # Hevy workouts (preserved)
-    if HEVY_API_KEY:
-        try:
-            response = requests.get(
-                "https://api.hevyapp.com/v1/workouts",
-                headers={"Authorization": f"Bearer {HEVY_API_KEY}"},
-                params={"limit": 3}
+
+        if response.status_code != 200:
+            return f"❌ Hevy API error: {response.status_code}"
+
+        data = response.json()
+        workouts = []
+        for workout in data.get("data", []):
+            workouts.append(
+                f"• {workout.get('name', 'Workout')} - {workout.get('date', 'Recent')}"
             )
-            if response.status_code == 200:
-                hevy_workouts = response.json().get("data", [])
-                for workout in hevy_workouts:
-                    workouts.append(f"**Hevy** {workout.get('name', 'Workout')} - {workout.get('date', 'Recent')}")
-        except:
-            pass
-    
-    return "**Recent Workouts:**\n" + "\n".join(workouts[:6]) or "No workouts found"
+
+        if not workouts:
+            return "No Hevy workouts found"
+
+        return "**Hevy Workouts:**\n" + "\n".join(workouts)
+    except Exception as e:
+        return f"❌ Hevy error: {str(e)}"
 
 
 @mcp.resource("recovery://current")
 async def recovery_resource() -> str:
-    """Current WHOOP recovery data."""
+    """Current WHOOP recovery status."""
     return await get_whoop_recovery()
 
 
 @mcp.resource("workouts://recent")
 async def workouts_resource() -> str:
     """Recent workouts from WHOOP + Hevy."""
-    return await get_workouts()
+    whoop = await get_whoop_workouts()
+    hevy = await get_hevy_workouts()
+    return f"{whoop}\n\n{hevy}"
 
 
 app = Starlette(
