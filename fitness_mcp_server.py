@@ -1,184 +1,250 @@
 import os
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-import uvicorn
+import requests
+from dotenv import load_dotenv
+from mcp.server import Server
+from mcp.server.models import InitializationOptions
+from mcp.server.sse import sse_app
+from mcp.types import (
+    ExecuteToolRequest,
+    ExecuteToolResult,
+    ListToolsRequest,
+    ListToolsResult,
+    Tool,
+    Resource,
+    ListResourcesRequest,
+    ListResourcesResult,
+    ReadResourceRequest,
+    ReadResourceResult,
+    UpdateSettingsRequest,
+)
 from starlette.applications import Starlette
 from starlette.routing import Mount
+from pydantic import AnyUrl
+
+load_dotenv()
+
+WHOOP_ACCESS_TOKEN = os.getenv("WHOOP_ACCESS_TOKEN")
+WHOOP_USER_ID = os.getenv("WHOOP_USER_ID")
+
+mcp = Server("fitness-mcp")
+
+# ==================== TOOLS ====================
+
+@mcp.tool()
+def get_whoop_recovery() -> str:
+    """Get your current WHOOP recovery score, strain, and sleep data."""
+    if not WHOOP_ACCESS_TOKEN or not WHOOP_USER_ID:
+        return "❌ WHOOP_ACCESS_TOKEN or WHOOP_USER_ID missing"
+    
+    headers = {
+        "Authorization": f"Bearer {WHOOP_ACCESS_TOKEN}",
+        "Whoop-User-ID": WHOOP_USER_ID
+    }
+    
+    url = f"https://api.whoop.com/graphql/v1"
+    
+    query = """
+    query GetRecovery($userId: String!) {
+        user(id: $userId) {
+            id
+            cycles(sort: {key: START_DATE_TIME, order: DESC}, first: 1) {
+                edges {
+                    node {
+                        recovery
+                        strain
+                        sleep_needed
+                        sleep_performed
+                        sleep_deficit
+                        sleep_efficiency
+                        restlessness
+                        sleep_latency
+                        sleep_performance
+                        start_date_time
+                        end_date_time
+                    }
+                }
+            }
+        }
+    }
+    """
+    
+    variables = {"userId": WHOOP_USER_ID}
+    
+    response = requests.post(
+        url, 
+        json={"query": query, "variables": variables},
+        headers=headers
+    )
+    
+    if response.status_code != 200:
+        return f"❌ API Error: {response.status_code}"
+    
+    data = response.json()
+    
+    if "errors" in data:
+        return f"❌ GraphQL Error: {data['errors']}"
+    
+    try:
+        cycle = data["data"]["user"]["cycles"]["edges"][0]["node"]
+        recovery = cycle["recovery"]
+        strain = cycle["strain"]
+        
+        recovery_emoji = "🟢" if recovery > 67 else "🟡" if recovery > 33 else "🔴"
+        
+        return f"""
+{recovery_emoji} **Recovery: {recovery}%**
+💪 **Strain: {strain:.0f}**
+😴 **Sleep Performed: {cycle['sleep_performed']:.1f}h** (Needed: {cycle['sleep_needed']:.1f}h)
+📊 **Efficiency: {cycle['sleep_efficiency']:.0f}%**
+        """.strip()
+    except (KeyError, IndexError):
+        return "❌ No recent data found"
+
+@mcp.tool()
+def get_workouts() -> str:
+    """Get your recent workouts from WHOOP."""
+    if not WHOOP_ACCESS_TOKEN or not WHOOP_USER_ID:
+        return "❌ WHOOP credentials missing"
+    
+    headers = {
+        "Authorization": f"Bearer {WHOOP_ACCESS_TOKEN}",
+        "Whoop-User-ID": WHOOP_USER_ID
+    }
+    
+    url = f"https://api.whoop.com/graphql/v1"
+    
+    query = """
+    query GetWorkouts($userId: String!) {
+        user(id: $userId) {
+            id
+            activities(sort: {key: START_DATE_TIME, order: DESC}, first: 5) {
+                edges {
+                    node {
+                        id
+                        name
+                        strain
+                        duration
+                        calories
+                        start_date_time
+                        end_date_time
+                        type
+                    }
+                }
+            }
+        }
+    }
+    """
+    
+    response = requests.post(url, json={"query": query, "userId": WHOOP_USER_ID}, headers=headers)
+    
+    if response.status_code != 200:
+        return f"❌ API Error: {response.status_code}"
+    
+    data = response.json()
+    activities = data["data"]["user"]["activities"]["edges"]
+    
+    if not activities:
+        return "No recent workouts found"
+    
+    workouts = []
+    for edge in activities:
+        activity = edge["node"]
+        duration = (datetime.fromisoformat(activity["end_date_time"].replace('Z', '+00:00')) 
+                   - datetime.fromisoformat(activity["start_date_time"].replace('Z', '+00:00'))).total_seconds() / 3600
+        workouts.append(f"• **{activity['name']}** ({duration:.1f}h): {activity['strain']:.0f} strain")
+    
+    return "**Recent Workouts:**\n" + "\n".join(workouts)
+
+# ==================== RESOURCES ====================
+
+@mcp.resource("recovery://current")
+async def get_recovery() -> str:
+    """Current WHOOP recovery data."""
+    return await mcp.execute_tool(ExecuteToolRequest(name="get_whoop_recovery"))
+
+@mcp.resource("workouts://recent")
+async def get_recent_workouts() -> str:
+    """Recent workouts from WHOOP."""
+    return await mcp.execute_tool(ExecuteToolRequest(name="get_workouts"))
+
+# ==================== SERVER SETUP ====================
+
+@mcp.list_tools()
+async def handle_list_tools(
+    request: ListToolsRequest,
+) -> ListToolsResult:
+    return ListToolsResult(
+        tools=[
+            Tool(
+                name="get_whoop_recovery",
+                description="Get your current WHOOP recovery score, strain, and sleep data.",
+                inputSchema={},
+            ),
+            Tool(
+                name="get_workouts",
+                description="Get your recent workouts from WHOOP.",
+                inputSchema={},
+            ),
+        ]
+    )
+
+@mcp.list_resources()
+async def handle_list_resources(
+    request: ListResourcesRequest,
+) -> ListResourcesResult:
+    return ListResourcesResult(
+        resources=[
+            Resource(
+                uri="recovery://current",
+                name="Current Recovery",
+                description="Your latest WHOOP recovery score and sleep data",
+                mimeType="text/markdown",
+            ),
+            Resource(
+                uri="workouts://recent", 
+                name="Recent Workouts",
+                description="Your 5 most recent WHOOP workouts",
+                mimeType="text/markdown",
+            ),
+        ]
+    )
+
+@mcp.read_resource()
+async def handle_read_resource(
+    request: ReadResourceRequest,
+) -> ReadResourceResult:
+    if request.uri == "recovery://current":
+        return ReadResourceResult(
+            uri=request.uri,
+            mimeType="text/markdown",
+            data=await get_recovery(),
+        )
+    elif request.uri == "workouts://recent":
+        return ReadResourceResult(
+            uri=request.uri,
+            mimeType="text/markdown",
+            data=await get_recent_workouts(),
+        )
+    raise ValueError(f"Unknown resource: {request.uri}")
+
+# ==================== STREAMABLE HTTP ====================
+
 from mcp.server.fastmcp import FastMCP
 
-import whoop_client
-import hevy_client
+fmcp = FastMCP(mcp)
 
-mcp = FastMCP("fitness-insights")
+@mcp.settings()
+async def handle_settings_update(request: UpdateSettingsRequest) -> None:
+    pass
 
-
-def safe_json(response):
-    try:
-        return response.json()
-    except Exception:
-        return {
-            "error": "Invalid JSON response",
-            "status_code": getattr(response, "status_code", None),
-        }
-
-
-@mcp.tool()
-def get_profile():
-    """Get WHOOP user profile."""
-    resp = whoop_client.get_profile()
-    return {
-        "status_code": resp.status_code,
-        "data": safe_json(resp),
-    }
-
-
-@mcp.tool()
-def get_body_measurements():
-    """Get WHOOP body measurements."""
-    resp = whoop_client.get_body_measurements()
-    return {
-        "status_code": resp.status_code,
-        "data": safe_json(resp),
-    }
-
-
-@mcp.tool()
-def get_recent_cycles(limit: int = 7):
-    """Get recent WHOOP cycles with strain."""
-    resp = whoop_client.get_cycles(limit=limit)
-    data = safe_json(resp)
-    records = data.get("records", data.get("cycles", [])) if isinstance(data, dict) else []
-
-    cycles = []
-    for cycle in records[:limit]:
-        cycles.append({
-            "id": cycle.get("id"),
-            "strain": cycle.get("score", {}).get("strain"),
-            "start": cycle.get("start"),
-            "end": cycle.get("end"),
-        })
-
-    return {
-        "status_code": resp.status_code,
-        "count": len(cycles),
-        "cycles": cycles,
-    }
-
-
-@mcp.tool()
-def get_recent_hevy_workouts(limit: int = 5):
-    """Get recent Hevy workouts."""
-    data = hevy_client.get_hevy_workouts(page=1, page_size=limit)
-    workouts = data.get("workouts", [])
-
-    formatted = []
-    for workout in workouts:
-        start_time = workout.get("start_time", "")
-        end_time = workout.get("end_time", "")
-        duration_min = None
-
-        if start_time and end_time:
-            try:
-                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-                duration_min = int((end_dt - start_dt).total_seconds() / 60)
-            except Exception:
-                duration_min = None
-
-        formatted.append({
-            "id": workout.get("id"),
-            "title": workout.get("title"),
-            "date": start_time[:10] if start_time else None,
-            "duration_min": duration_min,
-            "exercises": [
-                ex.get("title")
-                for ex in workout.get("exercises", [])[:5]
-                if ex.get("title")
-            ],
-        })
-
-    return {
-        "count": len(formatted),
-        "workouts": formatted,
-    }
-
-
-@mcp.tool()
-def get_training_summary():
-    """Get a combined WHOOP + Hevy summary."""
-    cycles_resp = whoop_client.get_cycles(limit=7)
-    cycles_data = safe_json(cycles_resp)
-    cycle_records = cycles_data.get("records", cycles_data.get("cycles", [])) if isinstance(cycles_data, dict) else []
-
-    strains = []
-    for cycle in cycle_records[:7]:
-        strain = cycle.get("score", {}).get("strain")
-        if strain is not None:
-            strains.append(float(strain))
-
-    avg_strain_3 = round(sum(strains[:3]) / min(len(strains[:3]), 3), 1) if strains[:3] else None
-    avg_strain_7 = round(sum(strains) / len(strains), 1) if strains else None
-
-    hevy_data = hevy_client.get_hevy_workouts(page=1, page_size=5)
-    workouts = hevy_data.get("workouts", [])
-
-    total_minutes = 0
-    workout_titles = []
-    for workout in workouts:
-        start_time = workout.get("start_time", "")
-        end_time = workout.get("end_time", "")
-        if start_time and end_time:
-            try:
-                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-                total_minutes += int((end_dt - start_dt).total_seconds() / 60)
-            except Exception:
-                pass
-        if workout.get("title"):
-            workout_titles.append(workout["title"])
-
-    return {
-        "avg_strain_3_cycles": avg_strain_3,
-        "avg_strain_7_cycles": avg_strain_7,
-        "recent_hevy_workout_count": len(workouts),
-        "recent_hevy_total_minutes": total_minutes,
-        "recent_hevy_titles": workout_titles[:5],
-    }
-
-
-@mcp.tool()
-def get_rehab_progress_notes():
-    """Summarize recent training pattern for rehab-oriented review."""
-    hevy_data = hevy_client.get_hevy_workouts(page=1, page_size=10)
-    workouts = hevy_data.get("workouts", [])
-
-    machine_sessions = 0
-    barbell_sessions = 0
-
-    for workout in workouts:
-        exercise_titles = [
-            (ex.get("title") or "").lower()
-            for ex in workout.get("exercises", [])
-        ]
-
-        if any("machine" in title for title in exercise_titles):
-            machine_sessions += 1
-        if any("barbell" in title for title in exercise_titles):
-            barbell_sessions += 1
-
-    return {
-        "recent_sessions_checked": len(workouts),
-        "machine_sessions": machine_sessions,
-        "barbell_sessions": barbell_sessions,
-        "interpretation": "Recent training appears machine-heavy, which may fit a post-surgery or lower-joint-stress phase.",
-    }
-
-
-mcp.settings.streamable_http_path = "/"
+# ==================== STARLETTE APP ====================
 
 app = Starlette(
     routes=[
-        Mount("/mcp", app=mcp.streamable_http_app()),
+        Mount("/mcp", app=sse_app(mcp)),
     ]
 )
 
