@@ -1,5 +1,9 @@
 import os
 from datetime import datetime
+
+import uvicorn
+from starlette.applications import Starlette
+from starlette.routing import Mount
 from mcp.server.fastmcp import FastMCP
 
 import whoop_client
@@ -170,12 +174,15 @@ def get_rehab_progress_notes():
     }
 
 
-app = mcp.http_app(path="/mcp")
+mcp.settings.streamable_http_path = "/"
 
+app = Starlette(
+    routes=[
+        Mount("/mcp", app=mcp.streamable_http_app()),
+    ]
+)
 
 if __name__ == "__main__":
-    import uvicorn
-
     port = int(os.environ.get("PORT", "8080"))
     print(f"FITNESS MCP SERVER STARTING ON PORT {port}...")
     uvicorn.run(app, host="0.0.0.0", port=port)
