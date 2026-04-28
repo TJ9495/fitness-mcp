@@ -179,7 +179,7 @@ def workouts_resource() -> str:
 
 app = Starlette(
     routes=[
-        Mount("/mcp", app=mcp.sse_app("/mcp")),
+        Mount("/", app=mcp.streamable_http_app()),
     ]
 )
 
