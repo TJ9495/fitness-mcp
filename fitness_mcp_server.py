@@ -12,8 +12,13 @@ load_dotenv()
 
 WHOOP_ACCESS_TOKEN = os.getenv("WHOOP_ACCESS_TOKEN")
 WHOOP_USER_ID = os.getenv("WHOOP_USER_ID")
+PORT = int(os.environ.get("PORT", "8080"))
 
-mcp = FastMCP("fitness-mcp")
+mcp = FastMCP(
+    "fitness-mcp",
+    host="0.0.0.0",
+    port=PORT,
+)
 
 
 @mcp.tool()
@@ -154,10 +159,9 @@ def workouts_resource() -> str:
 app = Starlette(
     routes=[
         Mount("/", app=mcp.sse_app()),
-    ]
+    ],
 )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8080"))
-    print(f"FITNESS MCP SERVER STARTING ON PORT {port}...")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    print(f"FITNESS MCP SERVER STARTING ON PORT {PORT}...")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
