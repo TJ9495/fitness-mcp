@@ -6,7 +6,6 @@ import uvicorn
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
-from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount
 
 load_dotenv()
@@ -14,7 +13,7 @@ load_dotenv()
 WHOOP_ACCESS_TOKEN = os.getenv("WHOOP_ACCESS_TOKEN")
 WHOOP_USER_ID = os.getenv("WHOOP_USER_ID")
 
-mcp = FastMCP("fitness-mcp", stateless_http=True)
+mcp = FastMCP("fitness-mcp")
 
 
 @mcp.tool()
@@ -154,16 +153,8 @@ def workouts_resource() -> str:
 
 app = Starlette(
     routes=[
-        Mount("/", app=mcp.streamable_http_app()),
+        Mount("/", app=mcp.sse_app()),
     ]
-)
-
-app = CORSMiddleware(
-    app,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
-    expose_headers=["Mcp-Session-Id"],
 )
 
 if __name__ == "__main__":
